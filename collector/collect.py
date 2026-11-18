@@ -9,6 +9,8 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+TZ = ZoneInfo("America/Toronto")
+
 ROOT = Path(__file__).resolve().parent.parent
 DATA = ROOT / "data" / "prices.json"
 API = "https://backflipp.wishabi.com/flipp/items/search"
@@ -73,6 +75,23 @@ def search(query, postal):
     return (d.get("items") or []) + (d.get("ecom_items") or [])
 
 
+def source(it):
+    """Where a price came from: the flyer page on Flipp, or the store's own product page."""
+    if it.get("item_type") == "ecom":  # only Walmart among our stores
+        return {"source": "online", "url": f"https://www.walmart.ca/en/ip/{it.get('sku') or it.get('item_id')}",
+                "image": it.get("image_url")}
+    return {
+        "source": "flyer", "url": f"https://flipp.com/en-ca/item/{it.get('flyer_item_id') or it.get('id')}",
+        "image": it.get("clean_image_url"), "valid_from": local_day(it.get("valid_from")),
+        "valid_to": local_day(it.get("valid_to")), "sale": it.get("sale_story"),
+    }
+
+
+def local_day(ts):
+    """Flipp gives UTC timestamps ("...T04:59:59+00:00" ends the previous Ottawa day)."""
+    return datetime.fromisoformat(ts).astimezone(TZ).date().isoformat() if ts else None
+
+
 def collect(watchlist, postal, today):
     rows = []
     for entry in watchlist:
@@ -82,9 +101,12 @@ def collect(watchlist, postal, today):
             name, price = (it.get("name") or "").strip(), it.get("current_price")
             if not store or not price or not matches(entry, name):
                 continue  # no price = "2/$5"-style deals Flipp doesn't give a number for
+            if (local_day(it.get("valid_from")) or today) > today:
+                continue  # next week's flyer, published early: not today's price
             row = {
                 "date": today, "item": entry["item"], "store": store, "name": name,
                 "price": float(price), "unit": (it.get("post_price_text") or "").strip(),
+                **source(it),
             }
             seen = by_store.setdefault(store, {})
             if name not in seen or row["price"] < seen[name]["price"]:
@@ -144,6 +166,10 @@ def selfcheck():
     assert up("Eggs", "PC® FREE RUN BROWN EGGS LARGE, 12'S", 6.5) == 6.5
     assert up("Eggs", "SELECTION WHITE EGGS", 5.99) == 5.99  # assumed dozen
     assert up("Bananas", "Banana", 0.29) == 2.42
+    assert source({"item_type": "ecom", "sku": "123"})["url"] == "https://www.walmart.ca/en/ip/123"
+    fl = source({"item_type": "flyer", "flyer_item_id": 9, "valid_from": "2026-11-12T05:00:00+00:00"})
+    assert fl["url"] == "https://flipp.com/en-ca/item/9" and fl["valid_from"] == "2026-11-12"
+    assert local_day("2026-11-19T04:59:59+00:00") == "2026-11-18"
     print("selfcheck ok")
 
 
@@ -154,7 +180,7 @@ if __name__ == "__main__":
     postal = os.environ.get("POSTAL_CODE", "").replace(" ", "")
     if not postal:
         sys.exit("set POSTAL_CODE")
-    today = datetime.now(ZoneInfo("America/Toronto")).date().isoformat()
+    today = datetime.now(TZ).date().isoformat()
     watchlist = json.loads((ROOT / "watchlist.json").read_text())
     rows = collect(watchlist, postal, today)
     if not rows:

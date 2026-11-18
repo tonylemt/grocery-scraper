@@ -10,6 +10,13 @@ struct PriceRow: Codable, Hashable {
     let unit: String
     let per: String?        // kg, L or dozen
     let unitPrice: Double?  // nil when the package size couldn't be read
+    // Where the price came from. Missing on rows collected before Nov 18, 2026.
+    let source: String?     // "flyer" (via Flipp) or "online" (store website)
+    let url: URL?
+    let image: URL?
+    let validFrom: String?  // flyer dates, yyyy-MM-dd
+    let validTo: String?
+    let sale: String?       // flyer sale text, e.g. "SAVE $2"
 
     var day: Date { Self.dayFormat.date(from: date) ?? .distantPast }
 
@@ -73,6 +80,12 @@ final class PriceStore {
     func current(_ item: String) -> [PriceRow] {
         func key(_ r: PriceRow) -> (Int, Double, Double) { (r.unitPrice == nil ? 1 : 0, r.unitPrice ?? 0, r.price) }
         return rows.filter { $0.item == item && $0.date == latestDate }.sorted { key($0) < key($1) }
+    }
+
+    /// Every day this exact product was seen at this store, oldest first.
+    func productHistory(_ row: PriceRow) -> [PriceRow] {
+        rows.filter { $0.item == row.item && $0.store == row.store && $0.name == row.name }
+            .sorted { $0.date < $1.date }
     }
 
     /// Cheapest unit price per store per day. Products without a unit price are left out.
