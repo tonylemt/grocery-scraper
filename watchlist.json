@@ -2,36 +2,44 @@
   {
     "item": "18g protein milk",
     "query": "protein milk",
+    "per": "L",
     "match": "natrel plus|18 ?g|ultrapur|fairlife|joyya",
     "exclude": "shake|chocolate|vanilla|soy|oat|yogurt|milk2go"
   },
   {
     "item": "Eggs",
     "query": "eggs",
+    "per": "dozen",
+    "assume": 1,
     "match": "\\beggs\\b|œufs",
     "exclude": "egg whites|liquid|wrap|egg[- ]free|quail|boiled|creations|salad|bites|bakes|gnocchi|chocolate|candy"
   },
   {
     "item": "Bananas",
     "query": "bananas",
+    "per": "kg",
+    "assume": 0.12,
     "match": "^(organic |fairtrade organic )?bananas?\\b",
     "exclude": "leaves|chips|bread|loaf|frozen|sliced"
   },
   {
     "item": "Apples",
     "query": "apples",
+    "per": "kg",
     "match": "\\bapples?\\b",
     "exclude": "sauce|juice|pie|cider|chips|pineapple|pur[ée]e|baby|vinegar|strudel|cinnamon|snack|caramel|drink|dried|turnover"
   },
   {
     "item": "Chicken breast",
     "query": "chicken breast",
+    "per": "kg",
     "match": "chicken breast",
     "exclude": "smoked|deli|shaved|sliced|roast|breaded|strips|skewer|frozen|stuffed|iqf|fajita|ham|pieces|seasoned|pinty|canned|flaked"
   },
   {
     "item": "Ground beef",
     "query": "ground beef",
+    "per": "kg",
     "match": "ground beef",
     "exclude": "plant|sauce|frozen|patties|burger|seasoning|helper|purina|dog|cat food|pork"
   }

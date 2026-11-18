@@ -8,6 +8,8 @@ struct PriceRow: Codable, Hashable {
     let name: String
     let price: Double
     let unit: String
+    let per: String?        // kg, L or dozen
+    let unitPrice: Double?  // nil when the package size couldn't be read
 
     var day: Date { Self.dayFormat.date(from: date) ?? .distantPast }
 
@@ -29,10 +31,16 @@ final class PriceStore {
 
     private let cache = URL.cachesDirectory.appending(path: "prices.json")
 
+    private static func decode(_ data: Data) throws -> [PriceRow] {
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        return try decoder.decode([PriceRow].self, from: data)
+    }
+
     init() {
         // Last download, so the app works offline.
         if let data = try? Data(contentsOf: cache) {
-            rows = (try? JSONDecoder().decode([PriceRow].self, from: data)) ?? []
+            rows = (try? Self.decode(data)) ?? []
         }
     }
 
@@ -44,7 +52,7 @@ final class PriceStore {
             guard (response as? HTTPURLResponse)?.statusCode == 200 else {
                 throw URLError(.badServerResponse)
             }
-            rows = try JSONDecoder().decode([PriceRow].self, from: data)
+            rows = try Self.decode(data)
             try? data.write(to: cache)
             error = nil
         } catch {
@@ -60,17 +68,20 @@ final class PriceStore {
 
     var latestDate: String? { rows.map(\.date).max() }
 
-    /// Matches for an item on the most recent collection day, cheapest first.
+    /// Matches for an item on the most recent collection day: cheapest per unit first,
+    /// then products whose size is unknown, by shelf price.
     func current(_ item: String) -> [PriceRow] {
-        rows.filter { $0.item == item && $0.date == latestDate }.sorted { $0.price < $1.price }
+        func key(_ r: PriceRow) -> (Int, Double, Double) { (r.unitPrice == nil ? 1 : 0, r.unitPrice ?? 0, r.price) }
+        return rows.filter { $0.item == item && $0.date == latestDate }.sorted { key($0) < key($1) }
     }
 
-    /// Cheapest matching price per store per day.
+    /// Cheapest unit price per store per day. Products without a unit price are left out.
     func history(_ item: String) -> [PriceRow] {
         var best: [String: PriceRow] = [:]
         for row in rows where row.item == item {
+            guard let up = row.unitPrice else { continue }
             let key = row.store + row.date
-            if best[key].map({ row.price < $0.price }) ?? true { best[key] = row }
+            if best[key].map({ up < $0.unitPrice! }) ?? true { best[key] = row }
         }
         return best.values.sorted { ($0.store, $0.date) < ($1.store, $1.date) }
     }

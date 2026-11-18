@@ -1,8 +1,17 @@
 import Charts
 import SwiftUI
 
-private func money(_ row: PriceRow) -> String {
-    row.price.formatted(.currency(code: "CAD")) + (row.unit.isEmpty ? "" : " \(row.unit)")
+private func cad(_ value: Double) -> String { value.formatted(.currency(code: "CAD")) }
+
+/// Shelf price as advertised, e.g. "$4.88 /lb".
+private func shelf(_ row: PriceRow) -> String {
+    cad(row.price) + (row.unit.isEmpty ? "" : " \(row.unit)")
+}
+
+/// "$10.76/kg", or nil when the size is unknown.
+private func perUnit(_ row: PriceRow) -> String? {
+    guard let up = row.unitPrice, let per = row.per else { return nil }
+    return "\(cad(up))/\(per)"
 }
 
 struct ContentView: View {
@@ -21,7 +30,7 @@ struct ContentView: View {
                             Spacer()
                             if let best = store.current(item).first {
                                 VStack(alignment: .trailing) {
-                                    Text(money(best)).monospacedDigit()
+                                    Text(perUnit(best) ?? shelf(best)).monospacedDigit()
                                     Text(best.store).font(.caption).foregroundStyle(.secondary)
                                 }
                             } else {
@@ -54,31 +63,48 @@ struct ItemDetail: View {
     var body: some View {
         let history = store.history(item)
         let current = store.current(item)
+        let per = current.compactMap(\.per).first ?? history.compactMap(\.per).first ?? "unit"
         List {
-            Section("Cheapest match per store") {
-                Chart(history, id: \.self) { row in
-                    LineMark(x: .value("Day", row.day, unit: .day), y: .value("Price", row.price))
-                        .foregroundStyle(by: .value("Store", row.store))
-                    PointMark(x: .value("Day", row.day, unit: .day), y: .value("Price", row.price))
-                        .foregroundStyle(by: .value("Store", row.store))
+            Section("Cheapest per \(per), by store") {
+                if history.isEmpty {
+                    Text("No product sizes could be read yet.").foregroundStyle(.secondary)
+                } else {
+                    Chart(history, id: \.self) { row in
+                        LineMark(x: .value("Day", row.day, unit: .day), y: .value("Price per \(per)", row.unitPrice!))
+                            .foregroundStyle(by: .value("Store", row.store))
+                        PointMark(x: .value("Day", row.day, unit: .day), y: .value("Price per \(per)", row.unitPrice!))
+                            .foregroundStyle(by: .value("Store", row.store))
+                    }
+                    .chartYAxis {
+                        AxisMarks(format: .currency(code: "CAD"))
+                    }
+                    .frame(height: 260)
+                    .padding(.vertical, 8)
                 }
-                .chartYAxis {
-                    AxisMarks(format: .currency(code: "CAD"))
-                }
-                .frame(height: 260)
-                .padding(.vertical, 8)
             }
-            Section("Today") {
+            Section {
                 ForEach(current, id: \.self) { row in
                     VStack(alignment: .leading, spacing: 2) {
-                        HStack {
+                        HStack(alignment: .firstTextBaseline) {
                             Text(row.store).font(.headline)
                             Spacer()
-                            Text(money(row)).monospacedDigit()
+                            Text(perUnit(row) ?? "size unknown")
+                                .monospacedDigit()
+                                .foregroundStyle(row.unitPrice == nil ? .secondary : .primary)
                         }
-                        Text(row.name).font(.caption).foregroundStyle(.secondary)
+                        HStack(alignment: .firstTextBaseline) {
+                            Text(row.name).lineLimit(2)
+                            Spacer()
+                            Text(shelf(row)).monospacedDigit()
+                        }
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                     }
                 }
+            } header: {
+                Text("Today")
+            } footer: {
+                Text("Shelf price on the right. Unsized eggs count as a dozen and a single banana as 120 g.")
             }
         }
         .navigationTitle(item)
