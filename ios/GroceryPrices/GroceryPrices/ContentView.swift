@@ -35,29 +35,18 @@ struct ContentView: View {
     var body: some View {
         NavigationStack {
             List {
-                if let error = store.error {
-                    Label(error, systemImage: "wifi.exclamationmark").foregroundStyle(.secondary)
-                }
+                Masthead(store: store)
+                    .listRowBackground(Color.paper)
+                    .listRowSeparator(.hidden)
                 ForEach(store.items, id: \.self) { item in
-                    NavigationLink(value: item) {
-                        HStack {
-                            Text(item)
-                            Spacer()
-                            if let best = store.current(item).first {
-                                VStack(alignment: .trailing) {
-                                    Text(perUnit(best, lb: lb) ?? shelf(best)).monospacedDigit()
-                                    Text(best.store).font(.caption).foregroundStyle(.secondary)
-                                }
-                            } else {
-                                Text(store.collecting.contains(item) ? "Collecting… check back in a few minutes"
-                                     : store.hasAnyPrices(item) ? "no price today" : "waiting for first collection")
-                                    .font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.trailing)
-                            }
-                        }
-                    }
+                    NavigationLink(value: item) { ItemRow(item: item, store: store, lb: lb) }
+                        .listRowBackground(Color.paper)
+                        .listRowSeparatorTint(.rule)
                 }
                 .onDelete { offsets in confirmRemove = offsets.first.map { store.items[$0] } }
             }
+            .listStyle(.plain)
+            .paper()
             .confirmationDialog("Stop tracking \(confirmRemove ?? "")?", isPresented: Binding(
                 get: { confirmRemove != nil }, set: { if !$0 { confirmRemove = nil } }
             ), titleVisibility: .visible, presenting: confirmRemove) { name in
@@ -73,6 +62,8 @@ struct ContentView: View {
                 if store.rows.isEmpty && store.error == nil { ProgressView() }
             }
             .navigationTitle("Grocery Prices")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar(removing: .title)  // the masthead is the title
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Button("Settings", systemImage: "gearshape") { showSettings = true }
@@ -99,12 +90,143 @@ struct ContentView: View {
             .navigationDestination(for: PriceRow.self) { ProductDetail(row: $0, store: store) }
             .refreshable { await store.refresh() }
             .task { await store.refresh() }
-            .safeAreaInset(edge: .bottom) {
-                if let date = store.latestDate {
-                    Text("Prices from \(date)").font(.footnote).foregroundStyle(.secondary).padding(8)
-                }
+        }
+    }
+}
+
+/// The flyer's front page: date, headline, and a heavy double rule.
+private struct Masthead: View {
+    let store: PriceStore
+    @ScaledMetric(relativeTo: .largeTitle) private var size: CGFloat = 76
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Kicker(store.latestDate.map {
+                "Prices from " + (PriceRow.dayFormat.date(from: $0) ?? .now)
+                    .formatted(.dateTime.weekday(.wide).month(.wide).day())
+            } ?? "Price watch")
+            Text("BEST PRICES")
+                .font(.system(size: size, weight: .black).width(.compressed))
+                .minimumScaleFactor(0.5)
+                .lineLimit(1)
+                .foregroundStyle(Color.ink)
+            VStack(spacing: 3) {
+                Rectangle().frame(height: 4)
+                Rectangle().frame(height: 1)
+            }
+            .foregroundStyle(Color.ink)
+            HStack {
+                Kicker("\(store.items.count) items")
+                Spacer()
+                Kicker("\(store.stores.count) stores · cheapest per unit")
+            }
+            if let error = store.error {
+                Label(error, systemImage: "wifi.exclamationmark").font(.label(.caption)).foregroundStyle(Color.deal)
             }
         }
+        .padding(.top, 8)
+    }
+}
+
+/// One item on the front page: name, where it's cheapest, its recent trend, and the price tag.
+private struct ItemRow: View {
+    let item: String
+    let store: PriceStore
+    let lb: Bool
+
+    var body: some View {
+        let today = store.current(item)
+        // ponytail: the last two weeks; make the window a setting if longer trends matter.
+        let days = Array(store.dailyBest(item).suffix(14))
+        HStack(alignment: .center, spacing: 12) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text(item).font(.name(.title3)).foregroundStyle(Color.ink)
+                if let best = today.first {
+                    let count = Set(today.map(\.store)).count
+                    HStack(spacing: 6) {
+                        StoreDot(name: best.store, stores: store.stores)
+                        Kicker(count > 1 ? "\(best.store) · best of \(count)" : best.store)
+                    }
+                    if days.count > 1 {
+                        HStack(spacing: 8) {
+                            Sparkline(days: days)
+                            Trend(days: days)
+                        }
+                    }
+                } else {
+                    Text(store.collecting.contains(item) ? "Collecting… check back in a few minutes"
+                         : store.hasAnyPrices(item) ? "No price today" : "Waiting for first collection")
+                        .font(.label(.caption)).foregroundStyle(Color.inkSoft)
+                }
+            }
+            Spacer(minLength: 8)
+            if let best = today.first {
+                let v = unitValue(best, lb: lb)
+                FlyerPrice(amount: v?.value ?? best.price, per: v?.per).priceTag()
+            }
+        }
+        .padding(.vertical, 10)
+    }
+}
+
+/// The cheapest price per day as a tiny ink line.
+private struct Sparkline: View {
+    let days: [PriceRow]
+
+    var body: some View {
+        Chart(days, id: \.self) {
+            LineMark(x: .value("Day", $0.day, unit: .day), y: .value("Price", $0.unitPrice ?? 0))
+                .foregroundStyle(Color.ink)
+                .lineStyle(StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
+        }
+        .chartXAxis(.hidden)
+        .chartYAxis(.hidden)
+        .chartYScale(domain: .automatic(includesZero: false))
+        .frame(width: 64, height: 18)
+        .accessibilityHidden(true)  // Trend says it in words
+    }
+}
+
+/// "↓ 8% since Nov 12", from the first to the last day given.
+private struct Trend: View {
+    let days: [PriceRow]  // cheapest per day, oldest first
+
+    var body: some View {
+        if let first = days.first, let last = days.last, let a = first.unitPrice, let b = last.unitPrice, a > 0 {
+            let change = (b - a) / a
+            let pct = Int((abs(change) * 100).rounded())
+            let since = "since \(shortDate(first.date))"
+            Group {
+                if pct == 0 {
+                    Label("Steady \(since)", systemImage: "equal").foregroundStyle(Color.inkSoft)
+                } else {
+                    Label("\(pct)% \(since)", systemImage: change < 0 ? "arrow.down" : "arrow.up")
+                        .foregroundStyle(change < 0 ? Color.cheaper : Color.pricier)
+                        .accessibilityLabel("\(change < 0 ? "Down" : "Up") \(pct)% \(since)")
+                }
+            }
+            .font(.label(.caption2))
+            .labelStyle(TightLabel())
+        }
+    }
+}
+
+private struct TightLabel: LabelStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        HStack(spacing: 3) { configuration.icon.fontWeight(.bold); configuration.title }
+    }
+}
+
+/// A flyer deal, e.g. "SAVE $2", as a red sticker.
+private struct DealBadge: View {
+    let text: String
+    var body: some View {
+        Text(text.uppercased())
+            .font(.label(.caption2)).fontWeight(.bold)
+            .foregroundStyle(.white)
+            .padding(.horizontal, 5).padding(.vertical, 2)
+            .background(Color.deal, in: .rect(cornerRadius: 2))
+            .rotationEffect(.degrees(-2))
     }
 }
 
@@ -121,56 +243,57 @@ struct ItemDetail: View {
         let sample = current.first(where: { $0.per != nil }) ?? history.first
         let per = sample.flatMap { unitValue($0, lb: lb)?.per } ?? "unit"
         List {
-            Section(per == "each" ? "Cheapest by store" : "Cheapest per \(per), by store") {
-                if history.isEmpty {
-                    Text("No product sizes could be read yet.").foregroundStyle(.secondary)
-                } else {
-                    Chart(history, id: \.self) { row in
-                        let y = unitValue(row, lb: lb)!.value
-                        LineMark(x: .value("Day", row.day, unit: .day), y: .value("Price per \(per)", y))
-                            .foregroundStyle(by: .value("Store", row.store))
-                        PointMark(x: .value("Day", row.day, unit: .day), y: .value("Price per \(per)", y))
-                            .foregroundStyle(by: .value("Store", row.store))
-                    }
-                    .chartYAxis {
-                        AxisMarks(format: .currency(code: "CAD"))
-                    }
-                    .frame(height: 260)
-                    .padding(.vertical, 8)
-                }
-            }
-            Section {
-                ForEach(current, id: \.self) { row in
-                    NavigationLink(value: row) {
-                        VStack(alignment: .leading, spacing: 2) {
-                            HStack(alignment: .firstTextBaseline) {
-                                Text(row.store).font(.headline)
-                                Spacer()
-                                Text(perUnit(row, lb: lb) ?? "size unknown")
-                                    .monospacedDigit()
-                                    .foregroundStyle(row.unitPrice == nil ? .secondary : .primary)
+            VStack(alignment: .leading, spacing: 12) {
+                Kicker(per == "each" ? "Cheapest shelf price today" : "Cheapest per \(per) today")
+                Text(item).font(.name(.largeTitle)).foregroundStyle(Color.ink)
+                if let best = current.first, let v = unitValue(best, lb: lb) {
+                    HStack(spacing: 16) {
+                        FlyerPrice(amount: v.value, per: v.per).priceTag()
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack(spacing: 6) {
+                                StoreDot(name: best.store, stores: store.stores)
+                                Text(best.store).font(.headline).foregroundStyle(Color.ink)
                             }
-                            HStack(alignment: .firstTextBaseline) {
-                                Text(row.name).lineLimit(2)
-                                Spacer()
-                                Text(shelf(row)).monospacedDigit()
-                            }
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                            Trend(days: store.dailyBest(item))
                         }
                     }
-                    .swipeActions {
-                        Button("Exclude", systemImage: "eye.slash") { excluding = row }.tint(.red)
-                    }
+                }
+            }
+            .listRowBackground(Color.clear)
+            .listRowInsets(EdgeInsets(top: 8, leading: 4, bottom: 8, trailing: 4))
+
+            Section {
+                if history.isEmpty {
+                    Text("No product sizes could be read yet.").foregroundStyle(Color.inkSoft)
+                } else {
+                    StoreChart(history: history, per: per, lb: lb, stores: store.stores)
+                        .padding(.vertical, 8)
                 }
             } header: {
-                Text("Today")
+                Kicker(per == "each" ? "Cheapest by store" : "Cheapest per \(per), by store")
             } footer: {
-                Text("Shelf price on the right. Tap a product to see where its price comes from, or swipe left to exclude a wrong one. Unsized eggs count as a dozen and a single banana as 120 g.")
+                if !history.isEmpty { Text("Touch and drag the chart to compare stores on one day.") }
             }
+            .listRowBackground(Color.card)
+
+            Section {
+                ForEach(Array(current.enumerated()), id: \.element) { i, row in
+                    NavigationLink(value: row) { OfferRow(row: row, rank: i + 1, lb: lb, stores: store.stores) }
+                        .swipeActions {
+                            Button("Exclude", systemImage: "eye.slash") { excluding = row }.tint(.deal)
+                        }
+                }
+            } header: {
+                Kicker("Today, cheapest first")
+            } footer: {
+                Text("Shelf price under each unit price. Tap a product to see where its price comes from, or swipe left to exclude a wrong one. Unsized eggs count as a dozen and a single banana as 120 g.")
+            }
+            .listRowBackground(Color.card)
         }
+        .paper()
         .navigationTitle(item)
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar(removing: .title)  // the hero shows the name
         .toolbar {
             if let entry = store.watch.first(where: { $0.item == item }) {
                 Button("Edit") { editing = entry }
@@ -183,7 +306,118 @@ struct ItemDetail: View {
     }
 }
 
-/// One product at one store: where the price comes from and its own price history.
+/// Cheapest unit price per store per day, one coloured line per store. Drag to read one day.
+private struct StoreChart: View {
+    let history: [PriceRow]
+    let per: String
+    let lb: Bool
+    let stores: [String]
+    @State private var picked: Date?
+
+    var body: some View {
+        let shown = stores.filter { s in history.contains { $0.store == s } }
+        let day = picked.map { d in history.filter { Calendar.current.isDate($0.day, inSameDayAs: d) } } ?? []
+        Chart {
+            ForEach(history, id: \.self) { row in
+                let y = unitValue(row, lb: lb)!.value
+                LineMark(x: .value("Day", row.day, unit: .day), y: .value("Price per \(per)", y))
+                    .foregroundStyle(by: .value("Store", row.store))
+                    .lineStyle(StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
+                PointMark(x: .value("Day", row.day, unit: .day), y: .value("Price per \(per)", y))
+                    .foregroundStyle(by: .value("Store", row.store))
+                    .symbolSize(36)
+            }
+            if let first = day.first {
+                RuleMark(x: .value("Day", first.day, unit: .day))
+                    .foregroundStyle(Color.inkSoft.opacity(0.5))
+                    .annotation(position: .top, spacing: 4,
+                                overflowResolution: .init(x: .fit(to: .chart), y: .fit(to: .chart))) {
+                        DayCallout(rows: day, lb: lb, stores: stores)
+                    }
+            }
+        }
+        .chartForegroundStyleScale(domain: shown, range: shown.map { Color.store($0, among: stores) })
+        .chartXSelection(value: $picked)
+        .chartXAxis {
+            AxisMarks { _ in
+                AxisGridLine().foregroundStyle(Color.rule)
+                AxisValueLabel().font(.label(.caption2)).foregroundStyle(Color.inkSoft)
+            }
+        }
+        .chartYAxis {
+            AxisMarks { value in
+                AxisGridLine().foregroundStyle(Color.rule)
+                AxisValueLabel {
+                    if let v = value.as(Double.self) { Text(cad(v)).font(.label(.caption2)).foregroundStyle(Color.inkSoft) }
+                }
+            }
+        }
+        .chartLegend(position: .bottom, spacing: 12)
+        .frame(height: 260)
+    }
+}
+
+/// Every store's price on the day under the finger, cheapest first.
+private struct DayCallout: View {
+    let rows: [PriceRow]
+    let lb: Bool
+    let stores: [String]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Kicker(shortDate(rows[0].date))
+            ForEach(rows.sorted { ($0.unitPrice ?? 0) < ($1.unitPrice ?? 0) }, id: \.self) { r in
+                HStack(spacing: 6) {
+                    StoreDot(name: r.store, stores: stores)
+                    Text(r.store)
+                    Spacer(minLength: 8)
+                    Text(perUnit(r, lb: lb) ?? "–").monospacedDigit().fontWeight(.semibold)
+                }
+                .font(.caption)
+            }
+        }
+        .foregroundStyle(Color.ink)
+        .padding(8)
+        .frame(width: 180)
+        .background(Color.card, in: .rect(cornerRadius: 6))
+        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.rule))
+    }
+}
+
+/// One product on today's ranking. The cheapest gets the yellow tag.
+private struct OfferRow: View {
+    let row: PriceRow
+    let rank: Int
+    let lb: Bool
+    let stores: [String]
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Text(String(format: "%02d", rank)).font(.label(.caption)).foregroundStyle(Color.inkSoft).padding(.top, 2)
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 6) {
+                    StoreDot(name: row.store, stores: stores)
+                    Text(row.store).font(.headline).foregroundStyle(Color.ink)
+                }
+                Text(row.name).font(.caption).foregroundStyle(Color.inkSoft).lineLimit(2)
+                if let sale = row.sale, !sale.isEmpty { DealBadge(text: sale) }
+            }
+            Spacer(minLength: 8)
+            VStack(alignment: .trailing, spacing: 4) {
+                if let v = unitValue(row, lb: lb) {
+                    let price = FlyerPrice(amount: v.value, per: v.per, size: .title2)
+                    if rank == 1 { price.priceTag() } else { price.foregroundStyle(Color.ink) }
+                } else {
+                    Kicker("Size unknown")
+                }
+                Text(shelf(row)).font(.label(.caption2)).foregroundStyle(Color.inkSoft)
+            }
+        }
+        .padding(.vertical, 4)
+    }
+}
+
+/// One product at one store, printed as a receipt: where the price comes from and its own history.
 struct ProductDetail: View {
     let row: PriceRow
     let store: PriceStore
@@ -191,67 +425,118 @@ struct ProductDetail: View {
     @Environment(\.dismiss) private var dismiss
     @State private var excluding: PriceRow?
 
+    private var source: String {
+        switch row.source {
+        case "flyer": "\(row.store) weekly flyer"
+        case "online": "\(row.store) website"
+        default: row.store == "Walmart" ? "Walmart website" : "\(row.store) weekly flyer"
+        }
+    }
+
     var body: some View {
         let history = store.productHistory(row)
-        List {
-            Section {
-                if let image = row.image {
-                    AsyncImage(url: image) { $0.resizable().scaledToFit() } placeholder: { ProgressView() }
-                        .frame(maxWidth: .infinity, maxHeight: 220)
-                }
-                Text(row.name).font(.headline)
-                LabeledContent("Store", value: row.store)
-                LabeledContent("Shelf price", value: shelf(row))
-                LabeledContent("Unit price", value: perUnit(row, lb: lb) ?? "Size unknown")
-                if let sale = row.sale, !sale.isEmpty {
-                    LabeledContent("Flyer deal", value: sale)
-                }
-            }
-            Section {
-                switch row.source {
-                case "flyer":
-                    LabeledContent("Source", value: "\(row.store) weekly flyer")
-                    if let from = row.validFrom, let to = row.validTo {
-                        LabeledContent("Flyer valid", value: "\(shortDate(from)) – \(shortDate(to))")
-                    }
-                case "online":
-                    LabeledContent("Source", value: "\(row.store) website price")
-                default:
-                    LabeledContent("Source", value: row.store == "Walmart" ? "Walmart website price" : "\(row.store) weekly flyer")
-                }
-                LabeledContent("Collected", value: shortDate(row.date))
-                if let url = row.url {
-                    Link(destination: url) {
-                        Label(row.source == "online" ? "Open on \(row.store) website" : "Open flyer item on Flipp",
-                              systemImage: "arrow.up.right.square")
-                    }
-                }
-            } header: {
-                Text("Where this price comes from")
-            } footer: {
-                Text(row.url == nil
-                     ? "Collected before links were saved; newer days include a link."
-                     : "Prices come from Flipp's search for your postal code, which covers store flyers and Walmart's online prices.")
-            }
-            Section("Price history for this product") {
-                ForEach(history.reversed(), id: \.self) { day in
-                    HStack {
-                        Text(shortDate(day.date))
-                        Spacer()
-                        Text(shelf(day)).monospacedDigit().foregroundStyle(.secondary)
-                        Text(perUnit(day, lb: lb) ?? "–").monospacedDigit().frame(minWidth: 90, alignment: .trailing)
-                    }
-                }
-            }
-            Section {
+        ScrollView {
+            VStack(spacing: 24) {
+                receipt(history)
                 Button("Not \(row.item)? Exclude this product", systemImage: "eye.slash", role: .destructive) {
                     excluding = row
                 }
+                .font(.label(.footnote))
+                .tint(.deal)
+                Text(row.url == nil
+                     ? "Collected before links were saved; newer days include a link."
+                     : "Prices come from Flipp's search for your postal code, which covers store flyers and Walmart's online prices.")
+                    .font(.footnote)
+                    .foregroundStyle(Color.inkSoft)
+                    .multilineTextAlignment(.center)
             }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 16)
         }
+        .background(Color.paper)
         .navigationTitle(row.store)
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar(removing: .title)  // the receipt header shows the store
         .modifier(ExcludeDialog(row: $excluding, store: store) { dismiss() })
+    }
+
+    private func receipt(_ history: [PriceRow]) -> some View {
+        VStack(spacing: 14) {
+            if let image = row.image {
+                AsyncImage(url: image) { $0.resizable().scaledToFit() } placeholder: { ProgressView() }
+                    .frame(maxWidth: .infinity, maxHeight: 170)
+                    .padding(12)
+                    .background(.white, in: .rect(cornerRadius: 4))
+            }
+            Text("*** \(row.store.uppercased()) ***").font(.label(.footnote)).fontWeight(.bold).tracking(2)
+            Text(row.name).font(.name(.title3)).multilineTextAlignment(.center)
+
+            Perforation()
+            VStack(spacing: 8) {
+                line("Shelf price", shelf(row))
+                if let sale = row.sale, !sale.isEmpty {
+                    HStack { label("Flyer deal"); Spacer(); DealBadge(text: sale) }
+                }
+                line("Source", source)
+                if let from = row.validFrom, let to = row.validTo {
+                    line("Flyer valid", "\(shortDate(from)) – \(shortDate(to))")
+                }
+                line("Collected", shortDate(row.date))
+            }
+
+            Perforation()
+            HStack(alignment: .center) {
+                Text(unitValue(row, lb: lb).map { $0.per == "each" ? "PRICE" : "PER \($0.per.uppercased())" } ?? "UNIT PRICE")
+                    .font(.label(.headline)).fontWeight(.heavy)
+                Spacer()
+                if let v = unitValue(row, lb: lb) {
+                    FlyerPrice(amount: v.value, per: v.per).priceTag()
+                } else {
+                    Kicker("Size unknown")
+                }
+            }
+
+            Perforation()
+            VStack(spacing: 6) {
+                Kicker("Price history")
+                ForEach(history.reversed(), id: \.self) { day in
+                    HStack {
+                        Text(shortDate(day.date).uppercased())
+                        Spacer()
+                        Text(shelf(day)).foregroundStyle(Color.inkSoft)
+                        Text(perUnit(day, lb: lb) ?? "–").frame(minWidth: 96, alignment: .trailing)
+                    }
+                    .font(.label(.caption))
+                }
+            }
+
+            if let url = row.url {
+                Perforation()
+                Link(destination: url) {
+                    Label(row.source == "online" ? "Open on \(row.store) website" : "Open flyer item on Flipp",
+                          systemImage: "arrow.up.right")
+                        .font(.label(.footnote)).fontWeight(.bold)
+                }
+            }
+            Kicker("Thank you for shopping around")
+                .padding(.top, 4)
+        }
+        .foregroundStyle(Color.ink)
+        .padding(.horizontal, 20)
+        .padding(.vertical, 30)
+        .background(ReceiptShape().fill(Color.card).shadow(color: .black.opacity(0.10), radius: 10, y: 4))
+    }
+
+    private func label(_ text: String) -> some View {
+        Text(text.uppercased()).font(.label(.caption)).foregroundStyle(Color.inkSoft)
+    }
+
+    private func line(_ name: String, _ value: String) -> some View {
+        HStack(alignment: .firstTextBaseline) {
+            label(name)
+            Spacer(minLength: 12)
+            Text(value).font(.label(.caption)).multilineTextAlignment(.trailing)
+        }
     }
 }
 

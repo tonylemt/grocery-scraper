@@ -187,4 +187,16 @@ final class PriceStore {
         }
         return best.values.sorted { ($0.store, $0.date) < ($1.store, $1.date) }
     }
+
+    /// Cheapest unit price across all stores, one row per day, oldest first.
+    func dailyBest(_ item: String) -> [PriceRow] {
+        var best: [String: PriceRow] = [:]
+        for row in history(item) where best[row.date].map({ row.unitPrice! < $0.unitPrice! }) ?? true {
+            best[row.date] = row
+        }
+        return best.values.sorted { $0.date < $1.date }
+    }
+
+    /// Every store in the data, alphabetical, so each keeps one colour everywhere.
+    var stores: [String] { Set(rows.map(\.store)).sorted() }
 }
