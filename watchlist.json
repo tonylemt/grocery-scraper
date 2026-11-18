@@ -48,5 +48,11 @@
     "match" : "Grapes",
     "per" : "L",
     "query" : "Grapes"
+  },
+  {
+    "item" : "Kawartha Ice Cream",
+    "match" : "Kawartha",
+    "per" : "each",
+    "query" : "Kawartha"
   }
 ]
