@@ -16,9 +16,9 @@ private func unitValue(_ row: PriceRow, lb: Bool) -> (value: Double, per: String
     return per == "kg" && lb ? (up * kgPerLb, "lb") : (up, per)
 }
 
-/// "$10.76/kg", or nil when the size is unknown.
+/// "$10.76/kg" ("$3.49 each" for shelf-price items), or nil when the size is unknown.
 private func perUnit(_ row: PriceRow, lb: Bool) -> String? {
-    unitValue(row, lb: lb).map { "\(cad($0.value))/\($0.per)" }
+    unitValue(row, lb: lb).map { $0.per == "each" ? "\(cad($0.value)) each" : "\(cad($0.value))/\($0.per)" }
 }
 
 private func shortDate(_ day: String) -> String {
@@ -28,6 +28,9 @@ private func shortDate(_ day: String) -> String {
 struct ContentView: View {
     @State private var store = PriceStore()
     @AppStorage("useLb") private var lb = false
+    @State private var showSettings = false
+    @State private var showAdd = false
+    @State private var confirmRemove: String?
 
     var body: some View {
         NavigationStack {
@@ -46,23 +49,51 @@ struct ContentView: View {
                                     Text(best.store).font(.caption).foregroundStyle(.secondary)
                                 }
                             } else {
-                                Text("no price today").font(.caption).foregroundStyle(.secondary)
+                                Text(store.collecting.contains(item) ? "Collecting… check back in a few minutes"
+                                     : store.hasAnyPrices(item) ? "no price today" : "waiting for first collection")
+                                    .font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.trailing)
                             }
                         }
                     }
                 }
+                .onDelete { offsets in confirmRemove = offsets.first.map { store.items[$0] } }
+            }
+            .confirmationDialog("Stop tracking \(confirmRemove ?? "")?", isPresented: Binding(
+                get: { confirmRemove != nil }, set: { if !$0 { confirmRemove = nil } }
+            ), titleVisibility: .visible, presenting: confirmRemove) { name in
+                Button("Stop tracking", role: .destructive) {
+                    Task {
+                        do { try await store.remove(name) } catch { store.error = error.localizedDescription }
+                    }
+                }
+            } message: { _ in
+                Text("Its price history is kept. Adding it again with the same name brings the history back.")
             }
             .overlay {
                 if store.rows.isEmpty && store.error == nil { ProgressView() }
             }
             .navigationTitle("Grocery Prices")
             .toolbar {
-                Picker("Weight unit", selection: $lb) {
-                    Text("kg").tag(false)
-                    Text("lb").tag(true)
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Settings", systemImage: "gearshape") { showSettings = true }
                 }
-                .pickerStyle(.segmented)
-                .fixedSize()
+                ToolbarItem(placement: .topBarTrailing) {
+                    Picker("Weight unit", selection: $lb) {
+                        Text("kg").tag(false)
+                        Text("lb").tag(true)
+                    }
+                    .pickerStyle(.segmented)
+                    .fixedSize()
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Add item", systemImage: "plus") {
+                        if Keychain.token == nil { showSettings = true } else { showAdd = true }
+                    }
+                }
+            }
+            .sheet(isPresented: $showSettings) { SettingsView() }
+            .sheet(isPresented: $showAdd) {
+                AddItemView(existing: store.items) { try await store.add($0) }
             }
             .navigationDestination(for: String.self) { ItemDetail(item: $0, store: store) }
             .navigationDestination(for: PriceRow.self) { ProductDetail(row: $0, store: store) }
@@ -88,7 +119,7 @@ struct ItemDetail: View {
         let sample = current.first(where: { $0.per != nil }) ?? history.first
         let per = sample.flatMap { unitValue($0, lb: lb)?.per } ?? "unit"
         List {
-            Section("Cheapest per \(per), by store") {
+            Section(per == "each" ? "Cheapest by store" : "Cheapest per \(per), by store") {
                 if history.isEmpty {
                     Text("No product sizes could be read yet.").foregroundStyle(.secondary)
                 } else {

@@ -14,7 +14,8 @@ TZ = ZoneInfo("America/Toronto")
 ROOT = Path(__file__).resolve().parent.parent
 DATA = ROOT / "data" / "prices.json"
 API = "https://backflipp.wishabi.com/flipp/items/search"
-# merchant-name prefix (lowercase) -> name shown in the app
+# merchant-name prefix (lowercase) -> name shown in the app. Keep in sync with
+# FlippSearch.stores in ios/GroceryPrices/GroceryPrices/GitHub.swift (add-item preview).
 STORES = {
     "freshco": "FreshCo",
     "t&t": "T&T",
@@ -42,7 +43,7 @@ NUM = r"(\d+(?:[.,]\d+)?)"
 
 
 def unit_price(row, entry):
-    """Price per entry["per"] (kg, L or dozen), or None when the size can't be read."""
+    """Price per entry["per"] (kg, L, dozen, or each = shelf price), or None when the size can't be read."""
     per, text, price = entry.get("per"), row["unit"].lower(), row["price"]
     name = row["name"].lower()
     num = lambda s: float(s.replace(",", "."))
@@ -59,6 +60,8 @@ def unit_price(row, entry):
     elif per == "L":
         if m := re.search(NUM + r"\s*(ml|l)\b", name):
             qty = num(m[1]) * (0.001 if m[2] == "ml" else 1)
+    elif per == "each":
+        qty = 1  # compared on shelf price, e.g. a loaf of bread or a box of cereal
     elif per == "dozen":
         if m := re.search(r"(\d+)\s*(?:pcs|pc|'s|eggs|ct|pk)\b", name):
             qty = int(m[1]) / 12
@@ -120,17 +123,17 @@ def collect(watchlist, postal, today):
     return rows
 
 
-def save(rows, today, watchlist):
-    old = json.loads(DATA.read_text()) if DATA.exists() else []
+def save(rows, today, watchlist, path=DATA):
+    old = json.loads(path.read_text()) if path.exists() else []
     allrows = [r for r in old if r["date"] != today] + rows  # rerun same day = replace
     wl = {e["item"]: e for e in watchlist}
     for r in allrows:  # recomputed every run, so parser fixes reach old rows too
-        e = wl.get(r["item"], {})
-        r["per"], r["unit_price"] = e.get("per"), unit_price(r, e)
-    DATA.parent.mkdir(exist_ok=True)
+        if e := wl.get(r["item"]):  # removed items keep their history as it was
+            r["per"], r["unit_price"] = e.get("per"), unit_price(r, e)
+    path.parent.mkdir(exist_ok=True)
     # one row per line so git diffs stay readable
     body = ",\n".join(json.dumps(r, ensure_ascii=False) for r in allrows)
-    DATA.write_text(f"[\n{body}\n]\n")
+    path.write_text(f"[\n{body}\n]\n")
 
 
 def selfcheck():
@@ -170,6 +173,15 @@ def selfcheck():
     fl = source({"item_type": "flyer", "flyer_item_id": 9, "valid_from": "2026-11-12T05:00:00+00:00"})
     assert fl["url"] == "https://flipp.com/en-ca/item/9" and fl["valid_from"] == "2026-11-12"
     assert local_day("2026-11-19T04:59:59+00:00") == "2026-11-18"
+    assert unit_price({"name": "Bread", "price": 3.49, "unit": ""}, {"per": "each"}) == 3.49
+    import tempfile  # removing an item from the watchlist must not wipe its history
+    with tempfile.TemporaryDirectory() as d:
+        p = Path(d) / "prices.json"
+        old = {"date": "2026-01-01", "item": "Gone", "name": "X 1 kg", "price": 5.0, "unit": "",
+               "per": "kg", "unit_price": 5.0}
+        p.write_text(json.dumps([old]))
+        save([], "2026-01-02", [], path=p)
+        assert json.loads(p.read_text())[0]["unit_price"] == 5.0
     print("selfcheck ok")
 
 

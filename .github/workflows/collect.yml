@@ -19,4 +19,5 @@ jobs:
           git config user.email "actions@users.noreply.github.com"
           git add data/prices.json
           git diff --cached --quiet || git commit -m "prices $(date -u +%F)"
+          git pull --rebase  # the app may have committed watchlist.json since checkout
           git push
