@@ -59,7 +59,7 @@ struct ItemForm: View {
 
     var body: some View {
         NavigationStack {
-            Form {
+            Form { Group {
                 if let saveError {
                     Section { Label(saveError, systemImage: "exclamationmark.triangle").foregroundStyle(.red) }
                 }
@@ -100,7 +100,8 @@ struct ItemForm: View {
                 }
 
                 previewSections
-            }
+            }.listRowBackground(Color.card) }
+            .paper()
             .scrollDismissesKeyboard(.interactively)
             .navigationTitle(editing == nil ? "Add item" : "Edit item")
             .navigationBarTitleDisplayMode(.inline)
@@ -187,12 +188,11 @@ private struct HitRow: View {
         HStack(alignment: .firstTextBaseline) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(hit.store).font(.subheadline.weight(.semibold))
-                Text(hit.name).font(.caption).lineLimit(2)
+                Text(hit.name).font(.caption).foregroundStyle(Color.inkSoft).lineLimit(2)
             }
             Spacer()
             Text(hit.price.formatted(.currency(code: "CAD")) + (hit.unit.isEmpty ? "" : " \(hit.unit)"))
-                .font(.caption)
-                .monospacedDigit()
+                .font(.label(.caption))
         }
     }
 }
@@ -206,7 +206,7 @@ struct SettingsView: View {
 
     var body: some View {
         NavigationStack {
-            Form {
+            Form { Group {
                 Section {
                     if hasToken {
                         LabeledContent("Token", value: "Saved")
@@ -240,7 +240,8 @@ struct SettingsView: View {
                 } footer: {
                     Text("Used on this phone only, to preview matches while you add an item. The daily collection uses the postal code saved in GitHub.")
                 }
-            }
+            }.listRowBackground(Color.card) }
+            .paper()
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
