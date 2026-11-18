@@ -2,7 +2,8 @@ import Foundation
 import Security
 
 /// One entry of watchlist.json (same fields the collector reads).
-struct WatchItem: Codable, Hashable {
+struct WatchItem: Codable, Hashable, Identifiable {
+    var id: String { item }  // names are unique in the watchlist
     var item: String       // name shown in the app
     var query: String      // search term sent to Flipp
     var per: String?       // kg, L, dozen or each
@@ -20,15 +21,58 @@ struct WatchItem: Codable, Hashable {
         return true
     }
 
-    /// "greek yogurt, skyr" -> "greek yogurt|skyr", with regex characters escaped. nil when empty.
-    static func pattern(fromPhrases text: String) -> String? {
+    private static let special = Set("\\^$.|?*+()[]{}")
+
+    /// Text -> regex that matches it literally.
+    static func escape(_ text: String) -> String {
+        text.map { special.contains($0) ? "\\\($0)" : String($0) }.joined()
+    }
+
+    /// "greek yogurt, skyr" -> "greek yogurt|skyr", with regex characters escaped. Phrases found in
+    /// `sources` (shown text -> regex part, from `phrases(of:)`) keep their original regex. nil when empty.
+    static func pattern(fromPhrases text: String, keeping sources: [String: String] = [:]) -> String? {
         let phrases = text.split(separator: ",")
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }
         guard !phrases.isEmpty else { return nil }
-        let special = Set("\\^$.|?*+()[]{}")
-        return phrases.map { $0.map { special.contains($0) ? "\\\($0)" : String($0) }.joined() }
-            .joined(separator: "|")
+        return phrases.map { sources[$0] ?? escape($0) }.joined(separator: "|")
+    }
+
+    /// Regex -> phrases for the edit form. Plain parts are shown unescaped; parts that use regex
+    /// syntax, like `\beggs\b`, are shown as written and saved back unchanged.
+    // ponytail: a regex part containing a comma would be split on save; none do today.
+    static func phrases(of regex: String?) -> [(shown: String, source: String)] {
+        guard let regex, !regex.isEmpty else { return [] }
+        var parts: [String] = [], part = "", depth = 0, escaped = false
+        for c in regex {  // split on top-level |, not inside (...) or [...]
+            if escaped { escaped = false }
+            else if c == "\\" { escaped = true }
+            else if c == "(" || c == "[" { depth += 1 }
+            else if c == ")" || c == "]" { depth -= 1 }
+            else if c == "|" && depth == 0 { parts.append(part); part = ""; continue }
+            part.append(c)
+        }
+        parts.append(part)
+        return parts.map { (plain($0) ?? $0, $0) }
+    }
+
+    /// The literal text of a regex part, or nil when it uses regex syntax.
+    private static func plain(_ part: String) -> String? {
+        var out = "", escaped = false
+        for c in part {
+            if escaped {
+                guard special.contains(c) else { return nil }
+                out.append(c)
+                escaped = false
+            } else if c == "\\" {
+                escaped = true
+            } else if special.contains(c) {
+                return nil
+            } else {
+                out.append(c)
+            }
+        }
+        return escaped ? nil : out
     }
 }
 

@@ -93,7 +93,7 @@ struct ContentView: View {
             }
             .sheet(isPresented: $showSettings) { SettingsView() }
             .sheet(isPresented: $showAdd) {
-                AddItemView(existing: store.items) { try await store.add($0) }
+                ItemForm(existing: store.items) { try await store.add($0) }
             }
             .navigationDestination(for: String.self) { ItemDetail(item: $0, store: store) }
             .navigationDestination(for: PriceRow.self) { ProductDetail(row: $0, store: store) }
@@ -112,6 +112,8 @@ struct ItemDetail: View {
     let item: String
     let store: PriceStore
     @AppStorage("useLb") private var lb = false
+    @State private var editing: WatchItem?
+    @State private var excluding: PriceRow?
 
     var body: some View {
         let history = store.history(item)
@@ -157,15 +159,27 @@ struct ItemDetail: View {
                             .foregroundStyle(.secondary)
                         }
                     }
+                    .swipeActions {
+                        Button("Exclude", systemImage: "eye.slash") { excluding = row }.tint(.red)
+                    }
                 }
             } header: {
                 Text("Today")
             } footer: {
-                Text("Shelf price on the right. Tap a product to see where its price comes from. Unsized eggs count as a dozen and a single banana as 120 g.")
+                Text("Shelf price on the right. Tap a product to see where its price comes from, or swipe left to exclude a wrong one. Unsized eggs count as a dozen and a single banana as 120 g.")
             }
         }
         .navigationTitle(item)
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            if let entry = store.watch.first(where: { $0.item == item }) {
+                Button("Edit") { editing = entry }
+            }
+        }
+        .sheet(item: $editing) { entry in
+            ItemForm(editing: entry, existing: store.items) { try await store.update($0) }
+        }
+        .modifier(ExcludeDialog(row: $excluding, store: store))
     }
 }
 
@@ -174,6 +188,8 @@ struct ProductDetail: View {
     let row: PriceRow
     let store: PriceStore
     @AppStorage("useLb") private var lb = false
+    @Environment(\.dismiss) private var dismiss
+    @State private var excluding: PriceRow?
 
     var body: some View {
         let history = store.productHistory(row)
@@ -227,8 +243,44 @@ struct ProductDetail: View {
                     }
                 }
             }
+            Section {
+                Button("Not \(row.item)? Exclude this product", systemImage: "eye.slash", role: .destructive) {
+                    excluding = row
+                }
+            }
         }
         .navigationTitle(row.store)
         .navigationBarTitleDisplayMode(.inline)
+        .modifier(ExcludeDialog(row: $excluding, store: store) { dismiss() })
+    }
+}
+
+/// Confirms and excludes a wrong product from its item.
+private struct ExcludeDialog: ViewModifier {
+    @Binding var row: PriceRow?
+    let store: PriceStore
+    var onDone: () -> Void = {}
+    @State private var error: String?
+
+    func body(content: Content) -> some View {
+        content
+            .confirmationDialog("Exclude this product?", isPresented: Binding(
+                get: { row != nil }, set: { if !$0 { row = nil } }
+            ), titleVisibility: .visible, presenting: row) { r in
+                Button("Exclude from \(r.item)", role: .destructive) {
+                    Task {
+                        do { try await store.exclude(r); onDone() } catch { self.error = error.localizedDescription }
+                    }
+                }
+            } message: { r in
+                Text("“\(r.name)” will be hidden from \(r.item), past days included, and won't be collected again. To undo, remove it from Exclude in Edit.")
+            }
+            .alert("Couldn't exclude", isPresented: Binding(
+                get: { error != nil }, set: { if !$0 { error = nil } }
+            )) {
+                Button("OK") {}
+            } message: {
+                Text(error ?? "")
+            }
     }
 }

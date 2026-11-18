@@ -64,25 +64,59 @@ final class PriceStore {
 
     /// Adds an item to watchlist.json and starts a collection so it gets prices today.
     func add(_ item: WatchItem) async throws {
-        guard Keychain.token != nil else { throw AppError(message: "Add a GitHub token in Settings first.") }
+        try needToken()
         setWatch(try await GitHub.updateWatchlist(message: "Track \(item.item) (added in the app)") { list in
             guard !list.contains(where: { $0.item.caseInsensitiveCompare(item.item) == .orderedSame }) else {
                 throw AppError(message: "You already track \(item.item).")
             }
             return list + [item]
         })
-        collecting.insert(item.item)
+        try await collect(item.item, saved: "added")
+    }
+
+    /// Replaces the item with the same name and re-collects today. The collector recalculates
+    /// unit prices for past days too, so a unit change applies to the whole history.
+    func update(_ item: WatchItem) async throws {
+        try needToken()
+        setWatch(try await GitHub.updateWatchlist(message: "Change \(item.item) (edited in the app)") { list in
+            list.map { $0.item == item.item ? item : $0 }
+        })
+        try await collect(item.item, saved: "saved")
+    }
+
+    /// Leaves this exact product out of its item: hidden in the app right away (past days too,
+    /// the rows stay in the data) and skipped by the collector from the next run.
+    func exclude(_ row: PriceRow) async throws {
+        try needToken()
+        // ponytail: commas become "." (any character) so the edit form keeps the name as one phrase
+        let phrase = WatchItem.escape(row.name).replacingOccurrences(of: ",", with: ".")
+        setWatch(try await GitHub.updateWatchlist(message: "Exclude \(row.name) from \(row.item)") { list in
+            list.map { entry in
+                guard entry.item == row.item else { return entry }
+                var entry = entry
+                entry.exclude = (entry.exclude ?? "").isEmpty ? phrase : entry.exclude! + "|" + phrase
+                return entry
+            }
+        })
+    }
+
+    private func needToken() throws {
+        guard Keychain.token != nil else { throw AppError(message: "Add a GitHub token in Settings first.") }
+    }
+
+    private func collect(_ name: String, saved: String) async throws {
+        collecting.insert(name)
         do {
             try await GitHub.startCollection()
         } catch {
-            collecting.remove(item.item)
-            throw AppError(message: "\(item.item) was added, but the collection didn't start (\(error.localizedDescription)). It will get prices in tomorrow's run.")
+            collecting.remove(name)
+            throw AppError(message: "\(name) was \(saved), but the collection didn't start (\(error.localizedDescription)). Tomorrow's run will pick it up.")
         }
     }
 
     /// Removes an item from watchlist.json. Its price history stays in the data.
     func remove(_ name: String) async throws {
-        guard Keychain.token != nil else { throw AppError(message: "Add a GitHub token in Settings first.") }
+        try needToken()
         setWatch(try await GitHub.updateWatchlist(message: "Stop tracking \(name) (removed in the app)") { list in
             list.filter { $0.item != name }
         })
@@ -119,7 +153,14 @@ final class PriceStore {
         return rows.map(\.item).filter { seen.insert($0).inserted }
     }
 
-    func hasAnyPrices(_ item: String) -> Bool { rows.contains { $0.item == item } }
+    /// An item's rows, minus products its current words leave out (they stay in the data).
+    // ponytail: runs the regex over the item's rows on every render; cache per item if it gets slow.
+    private func rows(of item: String) -> [PriceRow] {
+        let entry = watch.first { $0.item == item }
+        return rows.filter { $0.item == item && entry?.matches($0.name) != false }
+    }
+
+    func hasAnyPrices(_ item: String) -> Bool { !rows(of: item).isEmpty }
 
     var latestDate: String? { rows.map(\.date).max() }
 
@@ -127,19 +168,19 @@ final class PriceStore {
     /// then products whose size is unknown, by shelf price.
     func current(_ item: String) -> [PriceRow] {
         func key(_ r: PriceRow) -> (Int, Double, Double) { (r.unitPrice == nil ? 1 : 0, r.unitPrice ?? 0, r.price) }
-        return rows.filter { $0.item == item && $0.date == latestDate }.sorted { key($0) < key($1) }
+        return rows(of: item).filter { $0.date == latestDate }.sorted { key($0) < key($1) }
     }
 
     /// Every day this exact product was seen at this store, oldest first.
     func productHistory(_ row: PriceRow) -> [PriceRow] {
-        rows.filter { $0.item == row.item && $0.store == row.store && $0.name == row.name }
+        rows(of: row.item).filter { $0.store == row.store && $0.name == row.name }
             .sorted { $0.date < $1.date }
     }
 
     /// Cheapest unit price per store per day. Products without a unit price are left out.
     func history(_ item: String) -> [PriceRow] {
         var best: [String: PriceRow] = [:]
-        for row in rows where row.item == item {
+        for row in rows(of: item) {
             guard let up = row.unitPrice else { continue }
             let key = row.store + row.date
             if best[key].map({ up < $0.unitPrice! }) ?? true { best[key] = row }

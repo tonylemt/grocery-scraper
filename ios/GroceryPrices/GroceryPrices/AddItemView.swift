@@ -1,9 +1,10 @@
 import SwiftUI
 
-/// Form for a new watchlist item, with a live preview of what it would match.
-struct AddItemView: View {
+/// Form for a new or existing watchlist item, with a live preview of what it would match.
+struct ItemForm: View {
+    let editing: WatchItem?
     let existing: [String]
-    let onAdd: (WatchItem) async throws -> Void
+    let onSave: (WatchItem) async throws -> Void
 
     @Environment(\.dismiss) private var dismiss
     @AppStorage("postalCode") private var postal = ""
@@ -18,6 +19,21 @@ struct AddItemView: View {
     @State private var saving = false
     @State private var saveError: String?
     @State private var showExcluded = false
+    private let sources: [String: String]  // phrase shown -> its regex, for hand-written entries
+
+    init(editing: WatchItem? = nil, existing: [String], onSave: @escaping (WatchItem) async throws -> Void) {
+        self.editing = editing
+        self.existing = existing
+        self.onSave = onSave
+        let include = WatchItem.phrases(of: editing?.match), exclude = WatchItem.phrases(of: editing?.exclude)
+        sources = Dictionary((include + exclude).map { ($0.shown, $0.source) }, uniquingKeysWith: { a, _ in a })
+        guard let editing else { return }
+        _name = State(initialValue: editing.item)
+        _query = State(initialValue: editing.query)
+        _per = State(initialValue: editing.per ?? "kg")
+        _include = State(initialValue: include.map(\.shown).joined(separator: ", "))
+        _exclude = State(initialValue: exclude.map(\.shown).joined(separator: ", "))
+    }
 
     private var trimmedName: String { name.trimmingCharacters(in: .whitespaces) }
     private var trimmedQuery: String { query.trimmingCharacters(in: .whitespaces) }
@@ -25,13 +41,16 @@ struct AddItemView: View {
     /// The entry as it would be saved, or nil while required fields are missing.
     private var draft: WatchItem? {
         guard !trimmedQuery.isEmpty,
-              let match = WatchItem.pattern(fromPhrases: include.isEmpty ? trimmedQuery : include) else { return nil }
-        return WatchItem(item: trimmedName.isEmpty ? trimmedQuery : trimmedName, query: trimmedQuery, per: per,
-                         assume: nil, match: match, exclude: WatchItem.pattern(fromPhrases: exclude))
+              let match = WatchItem.pattern(fromPhrases: include.isEmpty ? trimmedQuery : include, keeping: sources)
+        else { return nil }
+        // The typical size of unsized products is in the old unit, so it's dropped on a unit change.
+        return WatchItem(item: editing?.item ?? (trimmedName.isEmpty ? trimmedQuery : trimmedName),
+                         query: trimmedQuery, per: per, assume: editing?.per == per ? editing?.assume : nil,
+                         match: match, exclude: WatchItem.pattern(fromPhrases: exclude, keeping: sources))
     }
 
     private var nameTaken: Bool {
-        guard let item = draft?.item else { return false }
+        guard editing == nil, let item = draft?.item else { return false }
         return existing.contains { $0.caseInsensitiveCompare(item) == .orderedSame }
     }
 
@@ -47,7 +66,11 @@ struct AddItemView: View {
                 Section {
                     TextField("Search term, e.g. greek yogurt", text: $query)
                         .autocorrectionDisabled()
-                    TextField("Name in the app (optional)", text: $name, prompt: Text(trimmedQuery.isEmpty ? "Name in the app (optional)" : trimmedQuery))
+                    if let editing {
+                        LabeledContent("Name", value: editing.item)
+                    } else {
+                        TextField("Name in the app (optional)", text: $name, prompt: Text(trimmedQuery.isEmpty ? "Name in the app (optional)" : trimmedQuery))
+                    }
                     Picker("Compare", selection: $per) {
                         Text("per kg").tag("kg")
                         Text("per L").tag("L")
@@ -57,6 +80,8 @@ struct AddItemView: View {
                 } footer: {
                     if nameTaken {
                         Text("You already track an item with this name.").foregroundStyle(.red)
+                    } else if editing != nil {
+                        Text("Saving re-runs today's collection and recalculates past unit prices. The name can't change because price history is kept by name.")
                     } else {
                         Text("Use “shelf price” for things sold by the package, like bread or cereal.")
                     }
@@ -77,7 +102,7 @@ struct AddItemView: View {
                 previewSections
             }
             .scrollDismissesKeyboard(.interactively)
-            .navigationTitle("Add item")
+            .navigationTitle(editing == nil ? "Add item" : "Edit item")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
@@ -85,8 +110,8 @@ struct AddItemView: View {
                     if saving {
                         ProgressView()
                     } else {
-                        Button("Add") { Task { await save() } }
-                            .disabled(draft == nil || nameTaken)
+                        Button(editing == nil ? "Add" : "Save") { Task { await save() } }
+                            .disabled(draft == nil || nameTaken || draft == editing)
                     }
                 }
             }
@@ -147,7 +172,7 @@ struct AddItemView: View {
         saving = true
         defer { saving = false }
         do {
-            try await onAdd(draft)
+            try await onSave(draft)
             dismiss()
         } catch {
             saveError = error.localizedDescription
