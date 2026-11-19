@@ -44,15 +44,39 @@
     "query" : "ground beef"
   },
   {
-    "item" : "Grapes",
-    "match" : "Grapes",
-    "per" : "L",
-    "query" : "Grapes"
-  },
-  {
     "item" : "Kawartha Ice Cream",
     "match" : "Kawartha",
     "per" : "each",
     "query" : "Kawartha"
+  },
+  {
+    "item" : "Grapes",
+    "match" : "Grapes",
+    "per" : "kg",
+    "query" : "Grapes"
+  },
+  {
+    "item" : "Buldak Noodles",
+    "match" : "Buldak",
+    "per" : "each",
+    "query" : "Buldak"
+  },
+  {
+    "item" : "Potatoes",
+    "match" : "Potatoes",
+    "per" : "kg",
+    "query" : "Potatoes"
+  },
+  {
+    "item" : "Dr. Elsey’s Cat Litter",
+    "match" : "Dr\\. Elsey’s",
+    "per" : "kg",
+    "query" : "Dr. Elsey’s"
+  },
+  {
+    "item" : "Bacon",
+    "match" : "Bacon",
+    "per" : "kg",
+    "query" : "Bacon"
   }
 ]
