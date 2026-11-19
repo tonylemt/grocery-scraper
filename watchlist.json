@@ -72,5 +72,11 @@
     "match" : "Dr\\. Elsey’s",
     "per" : "kg",
     "query" : "Dr. Elsey’s"
+  },
+  {
+    "item" : "Bacon",
+    "match" : "Bacon",
+    "per" : "kg",
+    "query" : "Bacon"
   }
 ]
