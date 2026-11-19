@@ -60,5 +60,11 @@
     "match" : "Buldak",
     "per" : "each",
     "query" : "Buldak"
+  },
+  {
+    "item" : "Potatoes",
+    "match" : "Potatoes",
+    "per" : "kg",
+    "query" : "Potatoes"
   }
 ]
