@@ -78,5 +78,11 @@
     "match" : "Bacon",
     "per" : "kg",
     "query" : "Bacon"
+  },
+  {
+    "item" : "Cat food",
+    "match" : "Cat food",
+    "per" : "kg",
+    "query" : "Cat food"
   }
 ]
