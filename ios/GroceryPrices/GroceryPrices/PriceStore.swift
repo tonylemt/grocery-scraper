@@ -199,4 +199,142 @@ final class PriceStore {
 
     /// Every store in the data, alphabetical, so each keeps one colour everywhere.
     var stores: [String] { Set(rows.map(\.store)).sorted() }
+
+    // MARK: Folders and order
+
+    /// The home list: unfiled items, then each folder with its items.
+    var homeRows: [Arrange.Row] { watch.isEmpty ? items.map { .item($0) } : Arrange.rows(watch) }
+
+    var folders: [String] { homeRows.compactMap { if case .folder(let f) = $0 { f } else { nil } } }
+
+    /// Saves the order and folders from the home list. Shows them right away and puts the
+    /// old ones back if GitHub refuses.
+    func arrange(_ rows: [Arrange.Row]) async {
+        let placements = Arrange.placements(rows)
+        let before = watch
+        setWatch(Arrange.arranged(watch, placements))
+        do {
+            try needToken()
+            setWatch(try await GitHub.updateWatchlist(message: "Rearrange items (in the app)") {
+                Arrange.arranged($0, placements)
+            })
+        } catch {
+            setWatch(before)
+            self.error = "Couldn't save the new order. \(error.localizedDescription)"
+        }
+    }
+
+    /// Moves an item into a folder (nil: out of any folder). It goes last in its new place,
+    /// so a new folder shows up at the bottom.
+    func setFolder(_ item: String, _ folder: String?) async throws {
+        try needToken()
+        let message = folder.map { "Move \(item) to \($0)" } ?? "Take \(item) out of its folder"
+        setWatch(try await GitHub.updateWatchlist(message: message + " (in the app)") { list in
+            // Grouped first, so taking an item out doesn't reorder the other folders.
+            var grouped = Arrange.arranged(list, Arrange.placements(Arrange.rows(list)))
+            guard let i = grouped.firstIndex(where: { $0.item == item }) else { return list }
+            var entry = grouped.remove(at: i)
+            entry.folder = folder
+            return grouped + [entry]
+        })
+    }
+
+    /// Renames a folder. With nil, removes it and leaves its items unfiled.
+    func renameFolder(_ old: String, to new: String?) async throws {
+        try needToken()
+        let message = new.map { "Rename folder \(old) to \($0)" } ?? "Remove folder \(old)"
+        setWatch(try await GitHub.updateWatchlist(message: message + " (in the app)") { list in
+            list.map { entry in
+                var entry = entry
+                if entry.folder == old { entry.folder = new }
+                return entry
+            }
+        })
+    }
+}
+
+/// Home-list order and folders. watchlist.json order is the display order; items with a
+/// `folder` sit under that folder's header, and folders show in the order they first appear.
+enum Arrange {
+    enum Row: Hashable {
+        case folder(String), item(String)
+        var isFolder: Bool { if case .folder = self { true } else { false } }
+    }
+
+    struct Placement: Equatable { let item: String; let folder: String? }
+
+    /// Unfiled items first, then each folder header followed by its items.
+    static func rows(_ watch: [WatchItem]) -> [Row] {
+        var top: [Row] = [], folders: [String] = [], members: [String: [Row]] = [:]
+        for entry in watch {
+            guard let f = entry.folder else { top.append(.item(entry.item)); continue }
+            if members[f] == nil { folders.append(f) }
+            members[f, default: []].append(.item(entry.item))
+        }
+        return top + folders.flatMap { [.folder($0)] + members[$0]! }
+    }
+
+    /// Items in order, each in the folder whose header is nearest above it.
+    static func placements(_ rows: [Row]) -> [Placement] {
+        var folder: String?
+        return rows.compactMap { row in
+            switch row {
+            case .folder(let f): folder = f; return nil
+            case .item(let i): return Placement(item: i, folder: folder)
+            }
+        }
+    }
+
+    /// A list move where a dragged folder header brings its items, and lands between folders
+    /// (never inside one, never above unfiled items).
+    static func move(_ rows: [Row], from source: IndexSet, to destination: Int) -> [Row] {
+        var moving = source, destination = destination
+        for i in source where rows[i].isFolder {
+            var j = i + 1
+            while j < rows.count, !rows[j].isFolder { moving.insert(j); j += 1 }
+            let gaps = (0...rows.count).filter { $0 == rows.count || rows[$0].isFolder }
+            destination = gaps.min { abs($0 - destination) < abs($1 - destination) }!
+        }
+        var rest = rows.indices.filter { !moving.contains($0) }.map { rows[$0] }
+        rest.insert(contentsOf: moving.map { rows[$0] }, at: destination - moving.count { $0 < destination })
+        return rest
+    }
+
+    /// The latest watchlist put in this order and these folders. Items not placed (added
+    /// elsewhere meanwhile) stay at the end with their own folder; removed ones stay removed.
+    static func arranged(_ latest: [WatchItem], _ placements: [Placement]) -> [WatchItem] {
+        let byName = Dictionary(latest.map { ($0.item, $0) }, uniquingKeysWith: { a, _ in a })
+        let placed = placements.compactMap { p -> WatchItem? in
+            guard var entry = byName[p.item] else { return nil }
+            entry.folder = p.folder
+            return entry
+        }
+        let names = Set(placements.map(\.item))
+        return placed + latest.filter { !names.contains($0.item) }
+    }
+
+    #if DEBUG
+    static func selfcheck() {
+        func w(_ item: String, _ folder: String? = nil) -> WatchItem {
+            WatchItem(item: item, query: item, match: item, folder: folder)
+        }
+        let watch = [w("Milk", "Dairy"), w("Bananas"), w("Beef", "Meat"), w("Eggs", "Dairy")]
+        let rows = rows(watch)
+        assert(rows == [.item("Bananas"), .folder("Dairy"), .item("Milk"), .item("Eggs"), .folder("Meat"), .item("Beef")])
+        // An item dragged to the top leaves its folder.
+        let p = placements(move(rows, from: [3], to: 0))
+        assert(p.map(\.item) == ["Eggs", "Bananas", "Milk", "Beef"] && p[0].folder == nil && p[2].folder == "Dairy")
+        // An item dragged under another header joins that folder.
+        assert(placements(move(rows, from: [0], to: 6)).last == Placement(item: "Bananas", folder: "Meat"))
+        // A folder brings its items, and snaps to the nearest gap between folders.
+        let meatFirst: [Row] = [.item("Bananas"), .folder("Meat"), .item("Beef"), .folder("Dairy"), .item("Milk"), .item("Eggs")]
+        assert(move(rows, from: [4], to: 0) == meatFirst)
+        assert(move(rows, from: [4], to: 2) == meatFirst)
+        assert(move(meatFirst, from: [1], to: 6) == rows)
+        // Saving keeps items added elsewhere and drops removed ones.
+        let latest = watch.filter { $0.item != "Beef" } + [w("Grapes")]
+        let out = arranged(latest, placements(rows))
+        assert(out.map(\.item) == ["Bananas", "Milk", "Eggs", "Grapes"] && out[1].folder == "Dairy" && out[3].folder == nil)
+    }
+    #endif
 }

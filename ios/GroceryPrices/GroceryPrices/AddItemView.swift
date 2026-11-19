@@ -46,7 +46,8 @@ struct ItemForm: View {
         // The typical size of unsized products is in the old unit, so it's dropped on a unit change.
         return WatchItem(item: editing?.item ?? (trimmedName.isEmpty ? trimmedQuery : trimmedName),
                          query: trimmedQuery, per: per, assume: editing?.per == per ? editing?.assume : nil,
-                         match: match, exclude: WatchItem.pattern(fromPhrases: exclude, keeping: sources))
+                         match: match, exclude: WatchItem.pattern(fromPhrases: exclude, keeping: sources),
+                         folder: editing?.folder)
     }
 
     private var nameTaken: Bool {
@@ -238,7 +239,7 @@ struct SettingsView: View {
                 } header: {
                     Text("Postal code")
                 } footer: {
-                    Text("Used on this phone only, to preview matches while you add an item. The daily collection uses the postal code saved in GitHub.")
+                    Text("Used on this phone only, to find flyers near you and to preview matches while you add an item. The daily collection uses the postal code saved in GitHub.")
                 }
             }.listRowBackground(Color.card) }
             .paper()

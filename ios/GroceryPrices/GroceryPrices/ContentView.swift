@@ -21,32 +21,87 @@ private func perUnit(_ row: PriceRow, lb: Bool) -> String? {
     unitValue(row, lb: lb).map { $0.per == "each" ? "\(cad($0.value)) each" : "\(cad($0.value))/\($0.per)" }
 }
 
-private func shortDate(_ day: String) -> String {
+func shortDate(_ day: String) -> String {
     (PriceRow.dayFormat.date(from: day) ?? .distantPast).formatted(.dateTime.month(.abbreviated).day())
 }
 
 struct ContentView: View {
-    @State private var store = PriceStore()
+    let store: PriceStore
     @AppStorage("useLb") private var lb = false
+    @AppStorage("collapsedFolders") private var collapsedFolders = ""  // one folder per line
     @State private var showSettings = false
     @State private var showAdd = false
     @State private var confirmRemove: String?
+    @State private var editMode = EditMode.inactive
+    @State private var draft: [Arrange.Row] = []  // the list while arranging
+    @State private var newFolderFor: String?      // item waiting for a new folder's name
+    @State private var renaming: String?          // folder being renamed
+    @State private var folderName = ""
+
+    private var arranging: Bool { editMode.isEditing }
+    private var collapsed: Set<String> { Set(collapsedFolders.split(separator: "\n").map(String.init)) }
+
+    /// The rows on screen: everything while arranging, otherwise minus items in collapsed folders.
+    private var rows: [Arrange.Row] {
+        if arranging { return draft }
+        var folder: String?
+        return store.homeRows.filter { row in
+            if case .folder(let f) = row { folder = f; return true }
+            return folder.map { !collapsed.contains($0) } ?? true
+        }
+    }
 
     var body: some View {
+        let rows = rows
+        let counts = Dictionary(Arrange.placements(arranging ? draft : store.homeRows).compactMap(\.folder).map { ($0, 1) },
+                                uniquingKeysWith: +)
         NavigationStack {
             List {
                 Masthead(store: store)
                     .listRowBackground(Color.paper)
                     .listRowSeparator(.hidden)
-                ForEach(store.items, id: \.self) { item in
-                    NavigationLink(value: item) { ItemRow(item: item, store: store, lb: lb) }
-                        .listRowBackground(Color.paper)
-                        .listRowSeparatorTint(.rule)
+                ForEach(rows, id: \.self) { row in
+                    switch row {
+                    case .folder(let name):
+                        FolderHeader(name: name, count: counts[name] ?? 0,
+                                     collapsed: !arranging && collapsed.contains(name)) { toggleCollapsed(name) }
+                            .contextMenu { if !arranging { folderMenu(name) } }
+                            .deleteDisabled(true)
+                            .listRowBackground(Color.paper)
+                            .listRowSeparator(.hidden)
+                    case .item(let item):
+                        NavigationLink(value: item) { ItemRow(item: item, store: store, lb: lb) }
+                            .contextMenu { if !arranging { moveMenu(item) } }
+                            .listRowBackground(Color.paper)
+                            .listRowSeparatorTint(.rule)
+                    }
                 }
-                .onDelete { offsets in confirmRemove = offsets.first.map { store.items[$0] } }
+                .onDelete(perform: arranging ? nil : { offsets in
+                    if case .item(let item)? = offsets.first.map({ rows[$0] }) { confirmRemove = item }
+                })
+                .onMove(perform: arranging ? { draft = Arrange.move(draft, from: $0, to: $1) } : nil)
             }
             .listStyle(.plain)
             .paper()
+            .environment(\.editMode, $editMode)
+            .alert("New folder", isPresented: Binding(
+                get: { newFolderFor != nil }, set: { if !$0 { newFolderFor = nil } }
+            )) {
+                TextField("Name, e.g. Dairy", text: $folderName)
+                Button("Cancel", role: .cancel) {}
+                Button("Move") { if let item = newFolderFor { setFolder(item, cleaned(folderName)) } }
+            } message: {
+                Text("Move \(newFolderFor ?? "") into a new folder.")
+            }
+            .alert("Rename folder", isPresented: Binding(
+                get: { renaming != nil }, set: { if !$0 { renaming = nil } }
+            )) {
+                TextField("Name", text: $folderName)
+                Button("Cancel", role: .cancel) {}
+                Button("Rename") {
+                    if let old = renaming, let new = cleaned(folderName), new != old { renameFolder(old, to: new) }
+                }
+            }
             .confirmationDialog("Stop tracking \(confirmRemove ?? "")?", isPresented: Binding(
                 get: { confirmRemove != nil }, set: { if !$0 { confirmRemove = nil } }
             ), titleVisibility: .visible, presenting: confirmRemove) { name in
@@ -67,6 +122,13 @@ struct ContentView: View {
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Button("Settings", systemImage: "gearshape") { showSettings = true }
+                }
+                ToolbarItem(placement: .topBarLeading) {
+                    if arranging {
+                        Button("Done") { finishArranging() }.fontWeight(.semibold)
+                    } else {
+                        Button("Arrange", systemImage: "arrow.up.arrow.down") { startArranging() }
+                    }
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Picker("Weight unit", selection: $lb) {
@@ -92,29 +154,108 @@ struct ContentView: View {
             .task { await store.refresh() }
         }
     }
+
+    private func startArranging() {
+        guard Keychain.token != nil else { showSettings = true; return }
+        draft = store.homeRows
+        withAnimation { editMode = .active }
+    }
+
+    private func finishArranging() {
+        withAnimation { editMode = .inactive }
+        guard Arrange.placements(draft) != Arrange.placements(store.homeRows) else { return }
+        Task { await store.arrange(draft) }
+    }
+
+    private func toggleCollapsed(_ folder: String) {
+        guard !arranging else { return }
+        var set = collapsed
+        if !set.insert(folder).inserted { set.remove(folder) }
+        withAnimation { collapsedFolders = set.sorted().joined(separator: "\n") }
+    }
+
+    /// A typed folder name, trimmed, spelled like an existing folder when it matches one. nil when blank.
+    private func cleaned(_ name: String) -> String? {
+        let name = name.trimmingCharacters(in: .whitespaces)
+        guard !name.isEmpty else { return nil }
+        return store.folders.first { $0.caseInsensitiveCompare(name) == .orderedSame } ?? name
+    }
+
+    @ViewBuilder private func moveMenu(_ item: String) -> some View {
+        let current = store.watch.first { $0.item == item }?.folder
+        Menu("Move to folder", systemImage: "folder") {
+            ForEach(store.folders.filter { $0 != current }, id: \.self) { folder in
+                Button(folder) { setFolder(item, folder) }
+            }
+            Button("New folder…", systemImage: "folder.badge.plus") { folderName = ""; newFolderFor = item }
+            if current != nil {
+                Button("Remove from folder", systemImage: "folder.badge.minus") { setFolder(item, nil) }
+            }
+        }
+    }
+
+    @ViewBuilder private func folderMenu(_ folder: String) -> some View {
+        Button("Rename…", systemImage: "pencil") { folderName = folder; renaming = folder }
+        Button("Remove folder", systemImage: "folder.badge.minus") { renameFolder(folder, to: nil) }
+    }
+
+    private func setFolder(_ item: String, _ folder: String?) {
+        guard Keychain.token != nil else { showSettings = true; return }
+        Task {
+            do { try await store.setFolder(item, folder) } catch { store.error = error.localizedDescription }
+        }
+    }
+
+    private func renameFolder(_ old: String, to new: String?) {
+        guard Keychain.token != nil else { showSettings = true; return }
+        Task {
+            do { try await store.renameFolder(old, to: new) } catch { store.error = error.localizedDescription }
+        }
+    }
+}
+
+/// A folder on the home list, printed like a flyer's department banner. Tap to fold it away.
+private struct FolderHeader: View {
+    let name: String
+    let count: Int
+    let collapsed: Bool
+    let toggle: () -> Void
+
+    var body: some View {
+        Button(action: toggle) {
+            HStack(spacing: 10) {
+                Text(name.uppercased())
+                    .font(.price(.title3))
+                    .foregroundStyle(Color.paper)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 2)
+                    .background(Color.ink)
+                Kicker(count == 1 ? "1 item" : "\(count) items")
+                Spacer()
+                Image(systemName: "chevron.down")
+                    .font(.footnote.weight(.bold))
+                    .foregroundStyle(Color.ink)
+                    .rotationEffect(.degrees(collapsed ? -90 : 0))
+            }
+            .contentShape(.rect)
+        }
+        .buttonStyle(.plain)
+        .padding(.top, 12)
+        .accessibilityLabel("\(name), \(count) items")
+        .accessibilityValue(collapsed ? "Collapsed" : "Expanded")
+    }
 }
 
 /// The flyer's front page: date, headline, and a heavy double rule.
 private struct Masthead: View {
     let store: PriceStore
-    @ScaledMetric(relativeTo: .largeTitle) private var size: CGFloat = 76
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Kicker(store.latestDate.map {
+            PageHeader(kicker: store.latestDate.map {
                 "Prices from " + (PriceRow.dayFormat.date(from: $0) ?? .now)
                     .formatted(.dateTime.weekday(.wide).month(.wide).day())
-            } ?? "Price watch")
-            Text("BEST PRICES")
-                .font(.system(size: size, weight: .black).width(.compressed))
-                .minimumScaleFactor(0.5)
-                .lineLimit(1)
-                .foregroundStyle(Color.ink)
-            VStack(spacing: 3) {
-                Rectangle().frame(height: 4)
-                Rectangle().frame(height: 1)
-            }
-            .foregroundStyle(Color.ink)
+            } ?? "Price watch", title: "BEST PRICES")
             HStack {
                 Kicker("\(store.items.count) items")
                 Spacer()
@@ -124,7 +265,6 @@ private struct Masthead: View {
                 Label(error, systemImage: "wifi.exclamationmark").font(.label(.caption)).foregroundStyle(Color.deal)
             }
         }
-        .padding(.top, 8)
     }
 }
 
@@ -214,19 +354,6 @@ private struct Trend: View {
 private struct TightLabel: LabelStyle {
     func makeBody(configuration: Configuration) -> some View {
         HStack(spacing: 3) { configuration.icon.fontWeight(.bold); configuration.title }
-    }
-}
-
-/// A flyer deal, e.g. "SAVE $2", as a red sticker.
-private struct DealBadge: View {
-    let text: String
-    var body: some View {
-        Text(text.uppercased())
-            .font(.label(.caption2)).fontWeight(.bold)
-            .foregroundStyle(.white)
-            .padding(.horizontal, 5).padding(.vertical, 2)
-            .background(Color.deal, in: .rect(cornerRadius: 2))
-            .rotationEffect(.degrees(-2))
     }
 }
 
