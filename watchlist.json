@@ -54,5 +54,11 @@
     "match" : "Grapes",
     "per" : "kg",
     "query" : "Grapes"
+  },
+  {
+    "item" : "Buldak Noodles",
+    "match" : "Buldak",
+    "per" : "each",
+    "query" : "Buldak"
   }
 ]
