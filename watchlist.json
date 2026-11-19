@@ -66,5 +66,11 @@
     "match" : "Potatoes",
     "per" : "kg",
     "query" : "Potatoes"
+  },
+  {
+    "item" : "Dr. Elsey’s Cat Litter",
+    "match" : "Dr\\. Elsey’s",
+    "per" : "kg",
+    "query" : "Dr. Elsey’s"
   }
 ]
