@@ -48,5 +48,11 @@
     "match" : "Kawartha",
     "per" : "each",
     "query" : "Kawartha"
+  },
+  {
+    "item" : "Grapes",
+    "match" : "Grapes",
+    "per" : "kg",
+    "query" : "Grapes"
   }
 ]
