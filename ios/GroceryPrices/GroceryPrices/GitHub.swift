@@ -10,6 +10,7 @@ struct WatchItem: Codable, Hashable, Identifiable {
     var assume: Double?    // typical size for unsized products, in `per` units
     var match: String      // regex the product name must match
     var exclude: String?   // regex that drops a product
+    var folder: String?    // home-list folder; the app only, the collector ignores it
 
     /// Same rule as `matches()` in collector/collect.py.
     func matches(_ name: String) -> Bool {
@@ -199,6 +200,12 @@ enum FlippSearch {
         ("walmart", "Walmart"), ("metro", "Metro"), ("farm boy", "Farm Boy"),
     ]
 
+    /// "Real Canadian Superstore" -> "Superstore" for the stores above, nil for others.
+    static func shortName(_ merchant: String) -> String? {
+        let m = merchant.lowercased()
+        return stores.first { m.hasPrefix($0.prefix) }?.name
+    }
+
     private struct Response: Decodable { let items: [Hit]?; let ecomItems: [Hit]? }
     private struct Hit: Decodable {
         let name: String?
@@ -222,8 +229,7 @@ enum FlippSearch {
         let response = try decoder.decode(Response.self, from: data)
         let iso = ISO8601DateFormatter()
         return ((response.items ?? []) + (response.ecomItems ?? [])).compactMap { hit in
-            let merchant = (hit.merchantName ?? hit.merchant ?? "").lowercased()
-            guard let store = stores.first(where: { merchant.hasPrefix($0.prefix) })?.name,
+            guard let store = shortName(hit.merchantName ?? hit.merchant ?? ""),
                   let price = hit.currentPrice, price > 0,
                   let name = hit.name?.trimmingCharacters(in: .whitespaces), !name.isEmpty else { return nil }
             if let start = hit.validFrom.flatMap(iso.date(from:)), start > .now { return nil }  // next week's flyer

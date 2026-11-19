@@ -52,9 +52,10 @@ extension Font {
 /// Small-caps style caption: mono, uppercase, spaced out.
 struct Kicker: View {
     let text: String
-    init(_ text: String) { self.text = text }
+    var color = Color.inkSoft
+    init(_ text: String, color: Color = .inkSoft) { self.text = text; self.color = color }
     var body: some View {
-        Text(text.uppercased()).font(.label(.caption2)).tracking(1.2).foregroundStyle(Color.inkSoft)
+        Text(text.uppercased()).font(.label(.caption2)).tracking(1.2).foregroundStyle(color)
     }
 }
 
@@ -108,6 +109,43 @@ extension View {
 
     /// Paper background behind a List or Form.
     func paper() -> some View { scrollContentBackground(.hidden).background(Color.paper) }
+}
+
+/// The top of each tab: small print, a big flyer headline, and a heavy double rule.
+struct PageHeader: View {
+    let kicker: String
+    let title: String
+    @ScaledMetric(relativeTo: .largeTitle) private var size: CGFloat = 76
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Kicker(kicker)
+            Text(title)
+                .font(.system(size: size, weight: .black).width(.compressed))
+                .minimumScaleFactor(0.5)
+                .lineLimit(1)
+                .foregroundStyle(Color.ink)
+            VStack(spacing: 3) {
+                Rectangle().frame(height: 4)
+                Rectangle().frame(height: 1)
+            }
+            .foregroundStyle(Color.ink)
+        }
+        .padding(.top, 8)
+    }
+}
+
+/// A flyer deal, e.g. "SAVE $2", as a red sticker.
+struct DealBadge: View {
+    let text: String
+    var body: some View {
+        Text(text.uppercased())
+            .font(.label(.caption2)).fontWeight(.bold)
+            .foregroundStyle(.white)
+            .padding(.horizontal, 5).padding(.vertical, 2)
+            .background(Color.deal, in: .rect(cornerRadius: 2))
+            .rotationEffect(.degrees(-2))
+    }
 }
 
 /// A store name with its chart colour, so colour never carries the store alone.
