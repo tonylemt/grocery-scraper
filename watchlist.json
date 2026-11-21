@@ -78,5 +78,11 @@
     "match" : "Cat food",
     "per" : "kg",
     "query" : "Cat food"
+  },
+  {
+    "item" : "Toilet paper",
+    "match" : "Toilet paper",
+    "per" : "kg",
+    "query" : "Toilet paper"
   }
 ]
